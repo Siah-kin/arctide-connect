@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Arctide · Connect wallet</title>
+<meta name="description" content="Prove you own your wallet to the Arctide Telegram bot by signing a one-time code. Free, not a transaction.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap">
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root {
+    --navy: #061126; --deep: #01326c; --ocean: #065ba8; --sky: #58c7f3; --cream: #fdf3e1;
+    --yellow: #fed83a; --ink: #061126; --muted: #4a5670; --card: #ffffff; --line: #e8ddc6;
+    --ok: #1d7a4f; --bad: #b3261e; --bg: var(--cream);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --ink: #f4f4f4; --muted: #a9b4c8; --card: #0e1d3a; --line: #22355c; --bg: var(--navy); }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: Inter, system-ui, sans-serif; background: var(--bg); color: var(--ink); line-height: 1.5; }
+  main { max-width: 480px; margin: 0 auto; padding: 20px 16px 40px; }
+  .brand { font-weight: 800; letter-spacing: .12em; font-size: 14px; color: var(--sky); }
+  h1 { font-size: 24px; margin: 6px 0 4px; }
+  p { margin: 8px 0; }
+  .muted { color: var(--muted); font-size: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; margin: 16px 0; }
+  .step { display: flex; gap: 10px; align-items: flex-start; }
+  .num { flex: none; width: 24px; height: 24px; border-radius: 50%; background: var(--ocean); color: #fff;
+         font-weight: 700; font-size: 13px; display: grid; place-items: center; margin-top: 2px; }
+  pre { white-space: pre-wrap; word-break: break-word; background: rgba(88,199,243,.12); border-radius: 8px;
+        padding: 10px; font-size: 13px; margin: 8px 0 0; }
+  button { width: 100%; min-height: 48px; border-radius: 10px; border: 2px solid var(--navy); background: var(--yellow);
+           color: var(--navy); font: 700 16px Inter, sans-serif; margin-top: 10px; cursor: pointer; }
+  button.secondary { background: transparent; color: var(--ink); border-color: var(--line); }
+  button:disabled { opacity: .5; cursor: default; }
+  .status { min-height: 22px; font-size: 14px; margin-top: 10px; }
+  .status.ok { color: var(--ok); } .status.bad { color: var(--bad); }
+  .hidden { display: none; }
+  .warn { border-left: 4px solid var(--yellow); padding-left: 10px; }
+</style>
+</head>
+<body>
+<main>
+  <div class="brand">ARCTIDE · THE FLOCK</div>
+  <h1>Connect your wallet</h1>
+  <p class="muted">This proves to the Arctide Telegram bot that you own your wallet. You sign a one-time code:
+    it's free, it is <b>not a transaction</b>, and it <b>cannot move funds</b>.</p>
+
+  <div id="bad-link" class="card hidden">
+    <p><b>This link isn't valid.</b> Open it from the bot: send <b>/staking</b> to @Arctide_TheFlock_Bot and tap
+      <b>🔗 Connect wallet</b>.</p>
+  </div>
+
+  <div id="flow">
+    <div class="card">
+      <div class="step"><div class="num">1</div><div><b>Choose your wallet</b>
+        <p class="muted" id="wallet-hint">Looking for wallets…</p></div></div>
+      <div id="wallets"></div>
+      <button id="wc" class="secondary hidden">WalletConnect (mobile wallets)</button>
+      <button id="mm-app" class="secondary hidden">Open in the MetaMask app</button>
+    </div>
+
+    <div class="card">
+      <div class="step"><div class="num">2</div><div><b>Sign this message</b>
+        <p class="muted">Your wallet will show exactly this text. Check the code matches the one in the bot.</p></div></div>
+      <pre id="message"></pre>
+      <button id="sign" disabled>Sign the code</button>
+      <div id="status" class="status"></div>
+    </div>
+
+    <div id="proof-card" class="card hidden">
+      <div class="step"><div class="num">3</div><div><b>Paste this into the bot</b>
+        <p class="muted">You opened this page outside Telegram, so copy this proof, go back to the bot chat and paste it.</p></div></div>
+      <pre id="proof"></pre>
+      <button id="copy">Copy proof</button>
+    </div>
+
+    <p class="muted warn">Never type a seed phrase or private key anywhere. Nobody from Arctide will ever ask for it,
+      and this page never does.</p>
+  </div>
+</main>
+
+<script>
+(function () {
+  "use strict";
+  // Set this to your own project id from cloud.reown.com (WalletConnect) to enable mobile wallets
+  // inside Telegram. Left empty, WalletConnect is hidden and the other routes still work.
+  var WALLETCONNECT_PROJECT_ID = "";
+
+  var tg = window.Telegram && window.Telegram.WebApp;
+  var inTelegram = !!(tg && tg.initData);
+  if (inTelegram) { tg.ready(); tg.expand(); }
+
+  var $ = function (id) { return document.getElementById(id); };
+  var message = new URLSearchParams(location.search).get("m") || "";
+  // Only the bot's own link-code text can be signed here: the page must never become a tool to get other
+  // messages signed.
+  var TEMPLATE = /^Arctide bot: link this wallet to Telegram account \d{1,15}\.\nCode: [0-9A-F]{8}\n\nSigning is free\. It is not a transaction and cannot move funds\.$/;
+  if (!TEMPLATE.test(message)) {
+    $("bad-link").classList.remove("hidden");
+    $("flow").classList.add("hidden");
+    return;
+  }
+  $("message").textContent = message;
+
+  var provider = null, address = null;
+  function status(text, kind) { var s = $("status"); s.textContent = text; s.className = "status " + (kind || ""); }
+
+  async function useProvider(p, label) {
+    try {
+      status("Waiting for " + label + "…");
+      var accounts = await p.request({ method: "eth_requestAccounts" });
+      if (!accounts || !accounts.length) throw new Error("No account was shared.");
+      provider = p; address = accounts[0];
+      status("Connected: " + address.slice(0, 6) + "…" + address.slice(-4) + ". Now sign the code.", "ok");
+      $("sign").disabled = false;
+    } catch (e) {
+      status((e && e.message) || "The wallet did not connect.", "bad");
+    }
+  }
+
+  // Browser wallets (EIP-6963 discovery, with window.ethereum as the fallback)
+  var seen = {};
+  function addWallet(info, p) {
+    if (seen[info.uuid || info.name]) return;
+    seen[info.uuid || info.name] = true;
+    var b = document.createElement("button");
+    b.textContent = info.name;
+    b.onclick = function () { useProvider(p, info.name); };
+    $("wallets").appendChild(b);
+    $("wallet-hint").textContent = "Pick the wallet you stake from.";
+  }
+  window.addEventListener("eip6963:announceProvider", function (ev) { addWallet(ev.detail.info, ev.detail.provider); });
+  window.dispatchEvent(new Event("eip6963:requestProvider"));
+  setTimeout(function () {
+    if (!Object.keys(seen).length && window.ethereum) addWallet({ name: "Browser wallet", uuid: "injected" }, window.ethereum);
+    if (!Object.keys(seen).length) {
+      $("wallet-hint").textContent = inTelegram
+        ? "No wallet inside Telegram. Use WalletConnect, or open this page in your wallet app."
+        : "No browser wallet found. Open this page in your wallet app's browser.";
+    }
+  }, 600);
+
+  // Mobile: open the same page inside MetaMask's own browser (the proof is then copied back to Telegram)
+  $("mm-app").classList.remove("hidden");
+  $("mm-app").onclick = function () {
+    var url = "https://metamask.app.link/dapp/" + location.host + location.pathname + location.search;
+    if (inTelegram) tg.openLink(url); else location.href = url;
+  };
+
+  // WalletConnect, only when a project id is configured
+  if (WALLETCONNECT_PROJECT_ID) {
+    $("wc").classList.remove("hidden");
+    $("wc").onclick = async function () {
+      try {
+        status("Loading WalletConnect…");
+        await new Promise(function (ok, fail) {
+          var s = document.createElement("script");
+          s.src = "https://cdn.jsdelivr.net/npm/@walletconnect/ethereum-provider@2.11.2/dist/index.umd.js";
+          s.onload = ok; s.onerror = function () { fail(new Error("WalletConnect could not load.")); };
+          document.head.appendChild(s);
+        });
+        var EP = window["@walletconnect/ethereum-provider"].EthereumProvider;
+        var wc = await EP.init({ projectId: WALLETCONNECT_PROJECT_ID, chains: [5042], showQrModal: true,
+          metadata: { name: "Arctide", description: "Connect your wallet to the Arctide bot",
+                      url: location.origin, icons: [] } });
+        await wc.connect();
+        await useProvider(wc, "WalletConnect");
+      } catch (e) { status((e && e.message) || "WalletConnect failed.", "bad"); }
+    };
+  }
+
+  $("sign").onclick = async function () {
+    if (!provider || !address) return;
+    $("sign").disabled = true;
+    try {
+      status("Check your wallet and sign…");
+      var hex = "0x" + Array.from(new TextEncoder().encode(message)).map(function (b) {
+        return b.toString(16).padStart(2, "0"); }).join("");
+      var signature = await provider.request({ method: "personal_sign", params: [hex, address] });
+      if (inTelegram && typeof tg.sendData === "function") {
+        status("Signed. Sending it to the bot…", "ok");
+        tg.sendData(JSON.stringify({ address: address, signature: signature }));  // Telegram closes the page
+        return;
+      }
+      var proof = "Arctide wallet proof\n" + address + "\n" + signature;
+      $("proof").textContent = proof;
+      $("proof-card").classList.remove("hidden");
+      status("Signed. Copy the proof below into the bot chat.", "ok");
+      $("copy").onclick = async function () {
+        try { await navigator.clipboard.writeText(proof); $("copy").textContent = "Copied: now paste it in the bot"; }
+        catch (e) { $("copy").textContent = "Select the text above and copy it"; }
+      };
+    } catch (e) {
+      $("sign").disabled = false;
+      status((e && e.message) || "The signature was cancelled.", "bad");
+    }
+  };
+})();
+</script>
+</body>
+</html>
